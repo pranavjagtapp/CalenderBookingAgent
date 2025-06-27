@@ -1,0 +1,112 @@
+from langgraph.graph import StateGraph
+import dateparser
+import pytz
+from typing import TypedDict
+from datetime import datetime, timedelta
+from google_calendar import get_free_slots, create_event
+
+# Define the structure of the state your graph will manage
+class BookingState(TypedDict):
+    intent: str | None
+    date: datetime | None
+    time: str | None
+    duration: int
+    confirmed: bool
+    slots: list[datetime] | None
+
+class BookingAgent:
+    def __init__(self):
+        self.graph = StateGraph(BookingState)
+        self.state: BookingState = {
+            "intent": None,
+            "date": None,
+            "time": None,
+            "duration": 30,
+            "confirmed": False,
+            "slots": None
+        }
+
+        self.graph.add_node("start", self.start_node)
+        self.graph.add_node("check_availability", self.check_availability)
+        self.graph.add_node("confirm_and_book", self.confirm_and_book)
+        self.graph.set_entry_point("start")
+
+
+def start_node(self, user_input):
+        # Parse date and time from user input using dateparser
+        parsed_time = dateparser.parse(
+            user_input,
+            settings={
+                'PREFER_DATES_FROM': 'future',
+                'RELATIVE_BASE': datetime.now()
+            }
+        )
+
+        # Save parsed time or fallback to current UTC
+        if parsed_time:
+            self.state["date"] = parsed_time
+        else:
+            self.state["date"] = datetime.utcnow()
+
+        # Determine intent and route accordingly
+        if "book" in user_input or "schedule" in user_input:
+            self.state["intent"] = "book"
+            return "check_availability"
+        elif "free" in user_input or "available" in user_input:
+            self.state["intent"] = "check"
+            return "check_availability"
+        else:
+            return "start"
+
+def check_availability(self, user_input):
+    start = self.state["date"]
+
+    # Make start timezone-aware in UTC (Google Calendar returns UTC times)
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=pytz.UTC)
+
+    # Create start and end of the same day
+    start_of_day = start.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_of_day = start.replace(hour=23, minute=59, second=59, microsecond=0)
+
+    # Ensure both are timezone-aware (UTC)
+    if start_of_day.tzinfo is None:
+        start_of_day = start_of_day.replace(tzinfo=pytz.UTC)
+    if end_of_day.tzinfo is None:
+        end_of_day = end_of_day.replace(tzinfo=pytz.UTC)
+
+    # Get free slots from calendar
+    slots = get_free_slots(start_of_day, end_of_day)
+
+    self.state["slots"] = []
+
+    if slots:
+        # Find closest slot to requested time
+        closest_slot = min(slots, key=lambda x: abs(x - start))
+        self.state["slots"] = [closest_slot]
+
+    return "confirm_and_book"
+
+
+def confirm_and_book(self, user_input):
+        if self.state["slots"]:
+            start = self.state["slots"][0]
+            end = start + timedelta(minutes=self.state["duration"])
+            create_event(start, end, summary="Booked via AI Agent")
+            self.state["confirmed"] = True
+            return f"Booked slot at {start.strftime('%I:%M %p')} on {start.strftime('%Y-%m-%d')}!"
+        else:
+            return "No free slots available."
+
+def run(self, user_input):
+        # 👇 Manual state transition simulation
+        node = "start"
+        while True:
+            if node == "start":
+                node = self.start_node(user_input)
+            elif node == "check_availability":
+                node = self.check_availability(user_input)
+            elif node == "confirm_and_book":
+                return self.confirm_and_book(user_input)
+            else:
+                return "Sorry, I didn't understand that."
